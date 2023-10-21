@@ -1,6 +1,6 @@
 # MilkV Embedded Linux Development Workspace
 
-![MilkV Board](milkv-board-image.jpg)
+![MilkV Board](resources/milkv-board-image.png)
 
 ## Table of Contents
 
