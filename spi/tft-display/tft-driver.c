@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include "wiringx.h"  // Include the wiringX library
 
-#define SPI_CHANNEL 0
+#define ST7789V_SPI_CHANNEL 0
 #define SPI_SPEED   500000
 
 // Define GPIO pins for controlling D/C and reset if needed
@@ -12,9 +12,117 @@
 #define RESET_PIN 27
 
 // SPI functions
-void sendCommand(uint8_t cmd);
-void sendData(uint8_t data);
+void writeCommand(uint8_t cmd);
+void writeData(uint8_t data);
 void initDisplay(void);
+
+void writeCommand(uint8_t cmd) {
+    uint8_t data[1] = {cmd};
+    wiringXSPIDataRW(ST7789V_SPI_CHANNEL, data, 1);
+}
+
+void writeData(uint8_t data) {
+    uint8_t dataArray[1] = {data};
+    wiringXSPIDataRW(ST7789V_SPI_CHANNEL, dataArray, 1);
+}
+
+void initDisplay(void) {
+    // 1. Software Reset
+    writeCommand(0x01); // Software reset command
+    usleep(150000);      // Wait for 150ms
+
+    // 2. Sleep Out
+    writeCommand(0x11); // Sleep Out command
+    usleep(120000);      // Wait for 120ms
+
+    // 3. Frame Rate Control
+    writeCommand(0xB2); // PORCH control
+    writeData(0x0C);    // Frame control values for front porch and back porch
+    writeData(0x0C);
+    writeData(0x00);
+    writeData(0x33);
+    writeData(0x33);
+
+    // 4. Gate Control
+    writeCommand(0xB7); // Gate control
+    writeData(0x35);
+
+    // 5. VCOM Setting
+    writeCommand(0xBB); // VCOM setting
+    writeData(0x19);    // Recommended VCOM setting
+
+    // 6. LCM Control
+    writeCommand(0xC0); // LCM control
+    writeData(0x2C);
+
+    // 7. VDV and VRH Command Enable
+    writeCommand(0xC2); // Command Enable
+    writeData(0x01);
+    writeData(0xFF);
+
+    // 8. VRH Set
+    writeCommand(0xC3);
+    writeData(0x11);
+
+    // 9. VDV Set
+    writeCommand(0xC4);
+    writeData(0x20);
+
+    // 10. Frame Rate Control in Normal Mode
+    writeCommand(0xC6);
+    writeData(0x0F);
+
+    // 11. Power Control
+    writeCommand(0xD0);
+    writeData(0xA4);
+    writeData(0xA1);
+
+    // 12. Memory Data Access Control
+    writeCommand(0x36); // Memory Data Access Control
+    writeData(0x00);    // Row/Column exchange settings (can adjust orientation)
+
+    // 13. Color Format
+    writeCommand(0x3A); // Pixel format set
+    writeData(0x05);    // 16-bit color
+
+    // 14. Display On
+    writeCommand(0x29); // Display on
+    usleep(100000);     // Wait for display on
+}
+
+// Set a rectangular area on the display
+void setAddressWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+    writeCommand(0x2A); // Column Address Set
+    writeData(x0 >> 8);
+    writeData(x0 & 0xFF);
+    writeData(x1 >> 8);
+    writeData(x1 & 0xFF);
+
+    writeCommand(0x2B); // Row Address Set
+    writeData(y0 >> 8);
+    writeData(y0 & 0xFF);
+    writeData(y1 >> 8);
+    writeData(y1 & 0xFF);
+
+    writeCommand(0x2C); // Memory Write
+}
+
+void fillDisplay(uint16_t color) {
+    setAddressWindow(0, 0, 239, 239); // For a 240x240 display
+
+    uint8_t highByte = color >> 8;
+    uint8_t lowByte = color & 0xFF;
+
+    for (uint32_t i = 0; i < 240 * 240; i++) {
+        writeData(highByte);
+        writeData(lowByte);
+    }
+}
+
+void clearDisplay() {
+    fillDisplay(0x0000); // Black color in RGB 5-6-5
+}
+
 
 int main() {
     // Initialize wiringX
@@ -24,63 +132,19 @@ int main() {
     }
 
     // Set up SPI
-    int spi_fd = wiringXSPISetup(SPI_CHANNEL, SPI_SPEED);
+    int spi_fd = wiringXSPISetup(ST7789V_SPI_CHANNEL, SPI_SPEED);
     if (spi_fd == -1) {
         fprintf(stderr, "Failed to set up SPI\n");
         return -1;
     }
-
-    // Set up GPIO pins for D/C and Reset
-    pinMode(DC_PIN, PINMODE_OUTPUT);
-    pinMode(RESET_PIN, PINMODE_OUTPUT);
-
-    // Initialize display
+    // Initialize Display
     initDisplay();
 
-    // Example usage: clear screen (send a fill color to all pixels)
-    sendCommand(0x2C);  // Memory write command
-    for (int i = 0; i < 240 * 240; i++) {
-        sendData(0xFF); // Red component
-        sendData(0x00); // Green component
-        sendData(0x00); // Blue component
-    }
-
-    // Close SPI
-    // wiringXClose();
+    // Fill display with blue as an example
+    fillDisplay(0x001F); // Blue color
+    sleep(2);             // Wait for 2 seconds
+    // Clear the display
+    clearDisplay();
 
     return 0;
-}
-
-void sendCommand(uint8_t cmd) {
-    digitalWrite(DC_PIN, 0);  // Set D/C to 0 for command
-    wiringXSPIDataRW(SPI_CHANNEL, &cmd, 1);
-}
-
-void sendData(uint8_t data) {
-    digitalWrite(DC_PIN, 1);  // Set D/C to 1 for data
-    wiringXSPIDataRW(SPI_CHANNEL, &data, 1);
-}
-
-void initDisplay(void) {
-    // Hardware reset
-    digitalWrite(RESET_PIN, 0);
-    usleep(50000);  // Delay for 50 ms
-    digitalWrite(RESET_PIN, 1);
-    usleep(50000);
-
-    // Initialization commands
-    sendCommand(0x01); // Software reset
-    usleep(150000);    // Delay 150 ms
-
-    sendCommand(0x11); // Sleep out
-    usleep(500000);    // Delay 500 ms
-
-    sendCommand(0x3A); // Set color mode
-    sendData(0x05);    // 16-bit color
-
-    sendCommand(0x36); // Memory data access control
-    sendData(0x00);    // Default orientation
-
-    sendCommand(0x29); // Display ON
-    usleep(100000);    // Delay 100 ms
 }
