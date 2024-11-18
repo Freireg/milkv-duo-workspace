@@ -1,0 +1,137 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <time.h>
+#include <arpa/inet.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
+#include <net/ethernet.h>
+#include <netpacket/packet.h>
+#include <netinet/if_ether.h>
+#include <netinet/ip.h>
+#include <sys/socket.h>
+
+#define ARP_PACKET_SIZE 42
+
+// Function to get the local IP and MAC address
+void get_local_ip_mac(const char *iface, uint8_t *mac, uint8_t *ip) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    struct ifreq ifr;
+
+    // Get IP address
+    ifr.ifr_addr.sa_family = AF_INET;
+    strncpy(ifr.ifr_name, iface, IFNAMSIZ - 1);
+    ioctl(fd, SIOCGIFADDR, &ifr);
+    memcpy(ip, &((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr, 4);
+
+    // Get MAC address
+    ioctl(fd, SIOCGIFHWADDR, &ifr);
+    memcpy(mac, ifr.ifr_hwaddr.sa_data, 6);
+
+    close(fd);
+}
+
+// Function to send ARP request
+void send_arp_request(int sock, const char *iface, uint8_t *src_mac, uint8_t *src_ip, uint8_t *target_ip) {
+    uint8_t buffer[ARP_PACKET_SIZE];
+    struct ether_header *eth = (struct ether_header *) buffer;
+    struct ether_arp *arp = (struct ether_arp *) (buffer + ETH_HLEN);
+
+    // Construct Ethernet header
+    memset(eth->ether_dhost, 0xff, 6); // Broadcast
+    memcpy(eth->ether_shost, src_mac, 6);
+    eth->ether_type = htons(ETH_P_ARP);
+
+    // Construct ARP request
+    arp->arp_hrd = htons(ARPHRD_ETHER);
+    arp->arp_pro = htons(ETH_P_IP);
+    arp->arp_hln = ETHER_ADDR_LEN;
+    arp->arp_pln = 4;
+    arp->arp_op = htons(ARPOP_REQUEST);
+    memcpy(arp->arp_sha, src_mac, 6);
+    memcpy(arp->arp_spa, src_ip, 4);
+    memset(arp->arp_tha, 0x00, 6);
+    memcpy(arp->arp_tpa, target_ip, 4);
+
+    struct sockaddr_ll socket_address;
+    socket_address.sll_ifindex = if_nametoindex(iface);
+    socket_address.sll_halen = ETH_ALEN;
+    memcpy(socket_address.sll_addr, eth->ether_dhost, 6);
+
+    // Send the packet
+    if (sendto(sock, buffer, ARP_PACKET_SIZE, 0, (struct sockaddr *)&socket_address, sizeof(socket_address)) < 0) {
+        perror("sendto failed");
+    }
+}
+
+// Function to scan the network and display metrics
+void scan_network(const char *iface) {
+    int sock;
+    uint8_t src_mac[6], src_ip[4];
+    uint8_t target_ip[4];
+    int devices_found = 0;
+    double total_rtt = 0.0;
+    size_t bytes_sent = 0, bytes_received = 0;
+
+    get_local_ip_mac(iface, src_mac, src_ip);
+
+    if ((sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ARP))) < 0) {
+        perror("Socket creation failed");
+        exit(1);
+    }
+
+    printf("Scanning network on interface %s...\n", iface);
+
+    for (int i = 1; i < 255; i++) {
+        memcpy(target_ip, src_ip, 3);
+        target_ip[3] = i;
+
+        struct timespec start, end;
+        clock_gettime(CLOCK_MONOTONIC, &start);
+
+        send_arp_request(sock, iface, src_mac, src_ip, target_ip);
+        bytes_sent += ARP_PACKET_SIZE;
+
+        uint8_t buffer[ETH_FRAME_LEN];
+        struct sockaddr saddr;
+        socklen_t saddr_len = sizeof(saddr);
+
+        int received = recvfrom(sock, buffer, ETH_FRAME_LEN, 0, &saddr, &saddr_len);
+        if (received < 0) {
+            perror("recvfrom failed");
+            continue;
+        }
+        bytes_received += received;
+
+        struct ether_header *eth = (struct ether_header *) buffer;
+        if (ntohs(eth->ether_type) == ETH_P_ARP) {
+            struct ether_arp *arp = (struct ether_arp *) (buffer + ETH_HLEN);
+            if (ntohs(arp->arp_op) == ARPOP_REPLY) {
+                clock_gettime(CLOCK_MONOTONIC, &end);
+                double rtt = (end.tv_sec - start.tv_sec) * 1000.0 + (end.tv_nsec - start.tv_nsec) / 1e6;
+                total_rtt += rtt;
+                devices_found++;
+
+                printf("Device found: IP = %d.%d.%d.%d, MAC = %02x:%02x:%02x:%02x:%02x:%02x, RTT = %.2f ms\n",
+                    arp->arp_spa[0], arp->arp_spa[1], arp->arp_spa[2], arp->arp_spa[3],
+                    arp->arp_sha[0], arp->arp_sha[1], arp->arp_sha[2],
+                    arp->arp_sha[3], arp->arp_sha[4], arp->arp_sha[5],
+                    rtt);
+            }
+        }
+    }
+
+    printf("\n--- Scan Summary ---\n");
+    printf("Total devices found: %d\n", devices_found);
+    printf("Average RTT: %.2f ms\n", devices_found > 0 ? total_rtt / devices_found : 0.0);
+    printf("Bytes sent: %zu\n", bytes_sent);
+    printf("Bytes received: %zu\n", bytes_received);
+
+    close(sock);
+}
+
+int main() {
+    scan_network("eth0");
+    return 0;
+}

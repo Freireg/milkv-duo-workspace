@@ -1,0 +1,19 @@
+#!/bin/sh
+# /etc/init.d/network_scan_init
+
+case "$1" in
+    start)
+        echo "Starting Network Scan"
+        ./root/network_scan &
+        ;;
+    stop)
+        echo "Stopping Network Scan"
+        killall network_scan
+        ;;
+    *)
+        echo "Usage: /etc/init.d/network_scan_init {start|stop}"
+        exit 1
+        ;;
+esac
+
+exit 0
